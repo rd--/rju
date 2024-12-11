@@ -1,9 +1,9 @@
 -- | rju-lxvst
 module Sound.Rju.LxVst where
 
-import Data.Word {- base -}
-
 import Sound.Osc {- hosc -}
+
+type U8 = Int
 
 -- * Io
 
@@ -49,8 +49,8 @@ lxvst_set_program :: Int -> Message
 lxvst_set_program k = message "/set_program" [int32 k]
 
 -- | Pack plain midi message.
-lxvst_midi :: [Word8] -> Message
-lxvst_midi b = message "/midi" [Blob (blob_pack b)]
+lxvst_midi :: [U8] -> Message
+lxvst_midi b = message "/midi" [Blob (blob_pack_int b)]
 
 -- * Hl
 
@@ -65,5 +65,5 @@ lxvst_send_print_param = to_lxvst [lxvst_print_param]
 
 -- > lxvst_send_midi [0x90,60,60]
 -- > lxvst_send_midi [0x80,60,60]
-lxvst_send_midi :: [Word8] -> IO ()
+lxvst_send_midi :: [U8] -> IO ()
 lxvst_send_midi = to_lxvst . return . lxvst_midi

@@ -1,7 +1,7 @@
 {-
 
-- read /time OSC messages sent by rju-osc
-- write /text OSC-JSON messages to websocket
+- read /time Osc messages sent by rju-osc
+- write /text Osc-Json messages to websocket
 
 -}
 
@@ -14,11 +14,12 @@ import qualified Network.WebSockets as W {- websockets -}
 import qualified Music.Theory.Opt as T {- hmt -}
 import qualified Music.Theory.Time.Notation as T {- hmt -}
 
-import Sound.OSC.FD {- hosc -}
+import Sound.Osc.Fd {- hosc -}
+import Sound.Osc.Transport.Fd.Udp {- hosc -}
 
-import Sound.OSC.Type.JSON {- hosc-json -}
+import Sound.Osc.Type.Json.Micro {- hosc-json -}
 
-ws_work :: UDP -> W.Connection -> IO ()
+ws_work :: Udp -> W.Connection -> IO ()
 ws_work u c = do
   m <- recvMessage u
   case m of
@@ -28,7 +29,7 @@ ws_work u c = do
       W.sendTextData c js
     _ -> return ()
 
-ws_proc :: UDP -> W.PendingConnection -> IO ()
+ws_proc :: Udp -> W.PendingConnection -> IO ()
 ws_proc u rq = do
   c <- W.acceptRequest rq
   putStrLn "transport-ws: connect"
@@ -42,7 +43,7 @@ main = do
       p = T.opt_scan_read a ("p",57130) -- rju-osc
   print ("h,w,p",h,w,p)
   withTransport
-    (openUDP h p)
+    (openUdp h p)
     (\u -> do
         sendMessage u (message "/receive" [int32 0x10])
         putStrLn "WAIT"
