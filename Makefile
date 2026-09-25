@@ -13,6 +13,7 @@ mk-cmd:
 
 push-all:
 	r.gitlab-push.sh rju
+	r.github-push.sh rju
 
 debian:
 	sudo apt-get install liblo-dev libsamplerate0-dev
