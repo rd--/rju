@@ -203,7 +203,7 @@ void osc_error(int n, const char *m, const char *p)
     eprintf("HOST> OSC> ERROR=%d PATH=%s: %s\n", n, p, m);
 }
 
-int osc_exit(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_exit(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     struct lxvst *lxvst = (struct lxvst *) u;
     lxvst->usr_exit = true;
@@ -211,7 +211,7 @@ int osc_exit(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
 }
 
 /* set_program ix:int */
-int osc_set_program(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_set_program(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     struct lxvst *lxvst = (struct lxvst *) u;
     VstInt32 ix = (VstInt32) a[0]->i;
@@ -222,7 +222,7 @@ int osc_set_program(const char *p, const char *t, lo_arg **a, int n, void *d, vo
 }
 
 /* set_param ix:int value:float ; set-parameter */
-int osc_set_param(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_set_param(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     struct lxvst *lxvst = (struct lxvst *) u;
     VstInt32 ix = (VstInt32) a[0]->i;
@@ -234,7 +234,7 @@ int osc_set_param(const char *p, const char *t, lo_arg **a, int n, void *d, void
 }
 
 /* set_param_seq ix:int cnt:int value0:float... ; set-parameter-sequence */
-int osc_set_param_seq(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_set_param_seq(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     break_on(n < 3, "ARG-CNT");
     break_on(t[0] != 'i' || t[1] != 'i', "ARG-TYPE");
@@ -252,7 +252,7 @@ int osc_set_param_seq(const char *p, const char *t, lo_arg **a, int n, void *d, 
 }
 
 /* set_print_param ; print-parameters */
-int osc_print_param(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_print_param(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     break_on(n != 0, "ARG-CNT");
     struct lxvst *lxvst = (struct lxvst *) u;
@@ -265,7 +265,7 @@ int osc_print_param(const char *p, const char *t, lo_arg **a, int n, void *d, vo
 }
 
 /* midi msg:blob ; send-midi-message */
-int osc_midi(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_midi(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
     struct lxvst *lxvst = (struct lxvst *) u;
     VstEventSet vst_e;

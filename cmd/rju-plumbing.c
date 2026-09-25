@@ -298,9 +298,10 @@ right_applies_p(const char *p_l, const char *r, const char *p_r, regmatch_t *sub
 static void
 apply_disconnect_rule(struct plumber *p, struct rule *r, const char **p_left, const char **p_right)
 {
-	TRAVERSE_CONNECTIONS(p, r, p_left,
-						 vprintf(p->q == 0, "Disconnect: '%s' -> '%s'\n", left, right);
-						 jack_port_disconnect_named(p->j, left, right));
+	TRAVERSE_CONNECTIONS(
+		p, r, p_left,
+		vprintf(p->q == 0, "Disconnect: '%s' -> '%s'\n", left, right);
+		jack_port_disconnect_named(p->j, left, right));
 }
 
 static void

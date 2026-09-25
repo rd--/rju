@@ -48,7 +48,7 @@ void osc_error(int n, const char *m, const char *p)
 		return 0; \
 	}
 
-int osc_g_load(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_g_load(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	w->ga = false;
@@ -69,7 +69,7 @@ int osc_g_load(const char *p, const char *t, lo_arg **a, int n, void *d, void *u
 	return 0;
 }
 
-int osc_g_unload(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_g_unload(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	w->ga = false;
@@ -84,7 +84,7 @@ int osc_g_unload(const char *p, const char *t, lo_arg **a, int n, void *d, void 
 	return 0;
 }
 
-int osc_c_set(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_c_set(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	int32_t i = a[0]->i;
@@ -94,7 +94,7 @@ int osc_c_set(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
 	return 0;
 }
 
-int osc_c_setn(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_c_setn(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	if (strlen(t) >= 3 && strncmp(t, "iif", 3) == 0) {
@@ -112,7 +112,7 @@ int osc_c_setn(const char *p, const char *t, lo_arg **a, int n, void *d, void *u
 }
 
 /* NOTE: buffer data is float */
-int osc_b_alloc(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_b_alloc(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	int32_t i = a[0]->i;
@@ -132,14 +132,14 @@ int osc_b_alloc(const char *p, const char *t, lo_arg **a, int n, void *d, void *
 	return 0;
 }
 
-int osc_quit(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_quit(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	struct world *w = (struct world *)u;
 	w->ef = true;
 	return 0;
 }
 
-int osc_print(const char *p, const char *t, lo_arg **a, int n, void *d, void *u)
+int osc_print(const char *p, const char *t, lo_arg **a, int n, struct lo_message_ *d, void *u)
 {
 	int i;
 	printf("p=%s, t=%s, n=%d a=", p, t, n);

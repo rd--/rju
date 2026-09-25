@@ -52,6 +52,13 @@ typedef struct
 	u8 data[PAYLOAD_BYTES];
 } packet_t;
 
+packet_t packet_copy(packet_t p)
+{
+	packet_t q;
+	memcpy(&q, &p, sizeof(packet_t));
+	return q;
+}
+
 void packet_ntoh(packet_t *p)
 {
 	p->index = ntoh_i32(p->index);
@@ -78,10 +85,12 @@ void packet_hton(packet_t *p)
 	p->frames = hton_i16(p->frames);
 }
 
+/* Send copy, index is stored at p and should not be byte-swapped. */
 void packet_sendto(int fd, packet_t *p, struct sockaddr_in address)
 {
-	packet_hton(p);
-	sendto_exactly(fd, (unsigned char *)p, sizeof(packet_t), address);
+	packet_t q = packet_copy(*p);
+	packet_hton(&q);
+	sendto_exactly(fd, (unsigned char *)&q, sizeof(packet_t), address);
 }
 
 void packet_recv(int fd, packet_t *p, int flags)
@@ -91,7 +100,6 @@ void packet_recv(int fd, packet_t *p, int flags)
 }
 
 /* Read data from udp port and write to ring buffer. */
-
 void *jackudp_recv_thread(void *PTR)
 {
 	jackudp_t *d = (jackudp_t *)PTR;
@@ -125,7 +133,6 @@ void *jackudp_recv_thread(void *PTR)
 }
 
 /* Write data from ring buffer to JACK output ports. */
-
 int jackudp_recv(jack_nframes_t nframes, void *PTR)
 {
 	jackudp_t *d = (jackudp_t *)PTR;
@@ -164,7 +171,6 @@ int jackudp_recv(jack_nframes_t nframes, void *PTR)
 
 /* Read data from ring buffer and write to udp port. Packets are
    always sent with a full payload. */
-
 void *jackudp_send_thread(void *PTR)
 {
 	jackudp_t *d = (jackudp_t *)PTR;
@@ -183,7 +189,6 @@ void *jackudp_send_thread(void *PTR)
 }
 
 /* Write data from the JACK input ports to the ring buffer. */
-
 int jackudp_send(jack_nframes_t n, void *PTR)
 {
 	jackudp_t *d = (jackudp_t *)PTR;
