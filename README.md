@@ -54,6 +54,7 @@ These were all initially named with a `jack-` prefix, and were renamed April 202
   [gpl](http://gnu.org/copyleft/).
   with contributions by:
 
+- Eric Bavu <!-- eric.bavu@gmail.com --> 2026-11-17
 - Nikita Zlobin, <!-- cook60020tmp@mail.ru --> 2016-05-14
 - Yoran Heling, <!-- projects@yorhel.nl --> 2010-10-30
 - Jeremy Hall, <!-- jhall@maoz.com --> 2010-09-07

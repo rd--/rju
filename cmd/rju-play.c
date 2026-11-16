@@ -24,6 +24,7 @@
 #include "r-common/c/jack-port.c"
 #include "r-common/c/jack-transport.c"
 #include "r-common/c/sf-sndfile.c"
+#include "r-common/c/time-pause.c"
 
 #define NAME_MAX 64
 
@@ -59,6 +60,10 @@ struct player {
 	jack_client_t *client;
 	SRC_STATE *src;
 	struct player_opt o;
+	bool reader_at_eof; /* set by the disk thread when it reaches the end of the file */
+	bool player_done; /* set by the process thread when the completed queue is empty */
+	i64 reader_frame_count; /* reader frame count sent to the converter, silence excluded */
+	i64 player_frame_count; /* player frame count read from the converter */
 };
 
 /* Read the sound file from disk and write to the ring buffer until
@@ -102,6 +107,9 @@ void *disk_proc(void *PTR)
 			} else if (d->o.loop) {
 				sf_seek(d->sound_file, 0, SEEK_SET);
 			} else {
+				/* Tell the process thread that no more data will come, so that
+				   it can play what is still buffered before the client is closed. */
+				d->reader_at_eof = true;
 				return NULL;
 			}
 		}
@@ -180,6 +188,13 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 	die_when(err == 0,
 		"rju-play: sample rate converter failed: %s\n",
 		src_strerror(src_error(d->src)));
+	d->player_frame_count += err;
+
+	/* Everything is played once the converter has produced as many frames
+	   as the reader read, scaled by the sample rate conversion ratio. */
+	if (d->reader_at_eof && d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
+		d->player_done = true;
+	}
 
 	/* Uninterleave available data to the output buffers. */
 	for (i = 0; i < err; i++) {
@@ -244,15 +259,22 @@ long read_input_from_rb(void *PTR, float **buf)
 	int nsamples = d->channels * d->o.rb_request_frames;
 	int nbytes = (size_t)nsamples * sizeof(float);
 
+	/* Read the end of file flag before the ring buffer: the disk thread
+	   sets it after the last write, an empty ring buffer seen after
+	   the flag means that the file is finished. */
+	bool reader_at_eof_before_read = d->reader_at_eof;
 	int err = ringbuffer_read(d->rb,
 		(char *)d->k_buffer,
 		nbytes);
 	err /= d->channels * sizeof(float);
 	*buf = d->k_buffer;
+	d->reader_frame_count += err;
 
 	/* SRC locks up if we return zero here, return a silent frame */
 	if (err == 0) {
-		fprintf(stderr, "rju-play: ringbuffer empty... zeroing data\n");
+		if (!reader_at_eof_before_read) {
+			fprintf(stderr, "rju-play: ringbuffer empty... zeroing data\n");
+		}
 		memset(d->k_buffer, 0, (size_t)nsamples * sizeof(float));
 		err = d->o.rb_request_frames;
 	}
@@ -265,6 +287,10 @@ int jackplay(const char *file_name,
 {
 	struct player d;
 	d.o = o;
+	d.reader_at_eof = false;
+	d.player_done = false;
+	d.reader_frame_count = 0;
+	d.player_frame_count = 0;
 	observe_signals();
 
 	/* Open sound file. */
@@ -354,6 +380,12 @@ int jackplay(const char *file_name,
 	/* Wait for disk thread to end, which it does when it reaches the
 	   end of the file or is interrupted. */
 	pthread_join(d.disk_thread, NULL);
+
+	/* The disk thread ends when the whole file is in the ring buffer.
+	   Wait until it has been played, or the tail of the file is lost. */
+	while (!d.player_done && d.reader_at_eof && !observe_end_of_process()) {
+		pause_for(0.002);
+	}
 
 	/* Close sound file, free ring buffer, close Jack connection, close
 	   pipe, free data buffers, indicate success. */
