@@ -250,7 +250,7 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 	/* Everything is played once the converter has produced as many frames
 	   as the reader read, scaled by the sample rate conversion ratio. */
 	if (atomic_load_explicit(&d->reader_at_eof, memory_order_acquire)
-	    && d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
+		&& d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
 		atomic_store_explicit(&d->player_done, true, memory_order_release);
 	}
 
@@ -442,8 +442,8 @@ int jackplay(const char *file_name,
 	/* The disk thread ends when the whole file is in the ring buffer.
 	   Wait until it has been played, or the tail of the file is lost. */
 	while (!atomic_load_explicit(&d.player_done, memory_order_acquire)
-	       && atomic_load_explicit(&d.reader_at_eof, memory_order_acquire)
-	       && !observe_end_of_process()) {
+		&& atomic_load_explicit(&d.reader_at_eof, memory_order_acquire)
+		&& !observe_end_of_process()) {
 		pause_for(0.002);
 	}
 
