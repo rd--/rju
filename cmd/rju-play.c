@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdbool.h> /* C99 */
 #include <stdint.h>
 #include <stdio.h>
@@ -66,27 +67,65 @@ struct player {
 	i64 player_frame_count; /* player frame count read from the converter */
 };
 
+/* True if a seek request has arrived that the disk thread has not served. */
+static bool seek_pending(struct player *d, i64 handled)
+{
+	i64 req = d->o.seek_request;
+	return req >= 0 && req != handled;
+}
+
+/* Tell the process thread that the request being served is done, unless
+   a newer one has replaced it in the meantime. */
+static void seek_clear(struct player *d, i64 *handled)
+{
+	if (*handled >= 0) {
+		atomic_compare_exchange_strong_explicit(
+			&d->o.seek_request,
+			handled,
+			(i64)-1,
+			memory_order_release,
+			memory_order_relaxed);
+		*handled = -1;
+	}
+}
+
 /* Read the sound file from disk and write to the ring buffer until
    the end of file, at which point either loop or return. */
 void *disk_proc(void *PTR)
 {
 	struct player *d = (struct player *)PTR;
+	i64 handled = -1; /* the seek request being served, still pending for the process thread */
 	while (!observe_end_of_process()) {
 
-		/* Handle seek request. */
-		if (d->o.seek_request >= 0) {
-			sf_count_t err = sf_seek(d->sound_file,
-				(sf_count_t)d->o.seek_request, SEEK_SET);
+		/* Handle seek request.  While a request is pending the process
+		   thread writes silence and leaves the ring buffer alone, so it is
+		   emptied here: it holds data from before the seek.  The request is
+		   cleared once the ring buffer has been filled again. */
+		i64 req = atomic_load_explicit(&d->o.seek_request, memory_order_acquire);
+		if (req >= 0 && req != handled) {
+			sf_count_t err = sf_seek(d->sound_file, (sf_count_t)req, SEEK_SET);
 			if (err == -1) {
-				fprintf(stderr, "rju-play: seek request failed, %ld\n",
-					(long)d->o.seek_request);
+				fprintf(stderr, "rju-play: seek request failed, %ld\n", (long)req);
 			}
-			d->o.seek_request = -1;
+			ringbuffer_read_advance(d->rb, ringbuffer_read_space(d->rb));
+			handled = req;
 		}
 
-		/* Wait for write space at the ring buffer. */
+		/* Wait for write space at the ring buffer, or for a new seek request. */
 		int nbytes = d->o.minimal_frames * sizeof(float) * d->channels;
-		nbytes = ringbuffer_wait_for_write(d->rb, nbytes, d->pipe[0]);
+		int space = (int)ringbuffer_write_space(d->rb);
+		while (space < nbytes && !seek_pending(d, handled)) {
+			char b;
+			if (read(d->pipe[0], &b, 1) == -1) {
+				fprintf(stderr, "rju-play: error reading communication pipe\n");
+				exit(1);
+			}
+			space = (int)ringbuffer_write_space(d->rb);
+		}
+		if (seek_pending(d, handled)) {
+			continue;
+		}
+		nbytes = space;
 
 		/* Do not overflow the local buffer. */
 		if (nbytes > d->buffer_bytes) {
@@ -109,7 +148,8 @@ void *disk_proc(void *PTR)
 			} else {
 				/* Tell the process thread that no more data will come, so that
 				   it can play what is still buffered before the client is closed. */
-				d->reader_at_eof = true;
+				atomic_store_explicit(&d->reader_at_eof, true, memory_order_release);
+				seek_clear(d, &handled);
 				return NULL;
 			}
 		}
@@ -123,6 +163,9 @@ void *disk_proc(void *PTR)
 		ringbuffer_write(d->rb,
 			(char *)d->d_buffer,
 			(size_t)err * sizeof(float));
+
+		/* The ring buffer is full again, let the process thread play. */
+		seek_clear(d, &handled);
 	}
 
 	return NULL;
@@ -133,7 +176,11 @@ int sync_handler(jack_transport_state_t state,
 	void *PTR)
 {
 	struct player *d = PTR;
-	d->o.seek_request = (i64)position->frame;
+	/* This runs in the process thread, like src_callback_read(), so the
+	   converter can be reset here: it still holds samples from before
+	   the seek. */
+	src_reset(d->src);
+	atomic_store_explicit(&d->o.seek_request, (i64)position->frame, memory_order_release);
 	return 1;
 }
 
@@ -166,6 +213,16 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 		d->out[i] = (float *)jack_port_get_buffer(d->output_port[i], nframes);
 	}
 
+	/* A seek is pending, the disk thread is emptying and refilling the
+	   ring buffer.  Write silence, and wake the disk thread in case it
+	   waits for space. */
+	if (atomic_load_explicit(&d->o.seek_request, memory_order_acquire) >= 0) {
+		signal_set(d->out, nframes, d->channels, 0.0);
+		char b = 1;
+		xwrite(d->pipe[1], &b, 1);
+		return 0;
+	}
+
 	/* Write silence if the transport is stopped.  If stopped the disk
 	   thread will sleep and signals will be ignored, so check here
 	   also. */
@@ -192,8 +249,9 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 
 	/* Everything is played once the converter has produced as many frames
 	   as the reader read, scaled by the sample rate conversion ratio. */
-	if (d->reader_at_eof && d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
-		d->player_done = true;
+	if (atomic_load_explicit(&d->reader_at_eof, memory_order_acquire)
+	    && d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
+		atomic_store_explicit(&d->player_done, true, memory_order_release);
 	}
 
 	/* Uninterleave available data to the output buffers. */
@@ -262,7 +320,7 @@ long read_input_from_rb(void *PTR, float **buf)
 	/* Read the end of file flag before the ring buffer: the disk thread
 	   sets it after the last write, an empty ring buffer seen after
 	   the flag means that the file is finished. */
-	bool reader_at_eof_before_read = d->reader_at_eof;
+	bool reader_at_eof_before_read = atomic_load_explicit(&d->reader_at_eof, memory_order_acquire);
 	int err = ringbuffer_read(d->rb,
 		(char *)d->k_buffer,
 		nbytes);
@@ -333,7 +391,7 @@ int jackplay(const char *file_name,
 
 	/* Start disk thread, the priority number is a random guess.... */
 	jack_client_create_thread(d.client,
-		&(d.disk_thread),
+		&d.disk_thread,
 		50,
 		true,
 		disk_proc,
@@ -383,7 +441,9 @@ int jackplay(const char *file_name,
 
 	/* The disk thread ends when the whole file is in the ring buffer.
 	   Wait until it has been played, or the tail of the file is lost. */
-	while (!d.player_done && d.reader_at_eof && !observe_end_of_process()) {
+	while (!atomic_load_explicit(&d.player_done, memory_order_acquire)
+	       && atomic_load_explicit(&d.reader_at_eof, memory_order_acquire)
+	       && !observe_end_of_process()) {
 		pause_for(0.002);
 	}
 
