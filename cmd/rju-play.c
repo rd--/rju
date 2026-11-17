@@ -13,6 +13,7 @@
 
 #include <samplerate.h> /* libsamplerate */
 
+#include "r-common/c/atomic.h"
 #include "r-common/c/failure.h"
 #include "r-common/c/file.h"
 #include "r-common/c/int.h"
@@ -25,14 +26,14 @@
 #include "r-common/c/jack-port.c"
 #include "r-common/c/jack-transport.c"
 #include "r-common/c/sf-sndfile.c"
-#include "r-common/c/time-pause.c"
+#include "r-common/c/time-timespec.c"
 
 #define NAME_MAX 64
 
 struct player_opt {
 	int buffer_frames;
 	int minimal_frames;
-	i64 seek_request;
+	atomic_i64 seek_request;
 	double seek_request_sec;
 	bool transport_aware;
 	bool unique_name;
@@ -61,8 +62,8 @@ struct player {
 	jack_client_t *client;
 	SRC_STATE *src;
 	struct player_opt o;
-	bool reader_at_eof; /* set by the disk thread when it reaches the end of the file */
-	bool player_done; /* set by the process thread when the completed queue is empty */
+	atomic_bool reader_at_eof; /* set by the disk thread when it reaches the end of the file */
+	atomic_bool player_done; /* set by the process thread when the completed queue is empty */
 	i64 reader_frame_count; /* reader frame count sent to the converter, silence excluded */
 	i64 player_frame_count; /* player frame count read from the converter */
 };
@@ -180,7 +181,10 @@ int sync_handler(jack_transport_state_t state,
 	   converter can be reset here: it still holds samples from before
 	   the seek. */
 	src_reset(d->src);
-	atomic_store_explicit(&d->o.seek_request, (i64)position->frame, memory_order_release);
+	/* The transport counts frames of the server, the file frames of its own
+	   rate: one frame of the server is 1 / src_ratio frames of the file. */
+	i64 frame = (i64)((double)position->frame / d->o.src_ratio);
+	atomic_store_explicit(&d->o.seek_request, frame, memory_order_release);
 	return 1;
 }
 
@@ -444,7 +448,9 @@ int jackplay(const char *file_name,
 	while (!atomic_load_explicit(&d.player_done, memory_order_acquire)
 		&& atomic_load_explicit(&d.reader_at_eof, memory_order_acquire)
 		&& !observe_end_of_process()) {
-		pause_for(0.002);
+		struct timespec req = usec_to_timespec(2000);
+		struct timespec rem;
+		nanosleep(&req, &rem);
 	}
 
 	/* Close sound file, free ring buffer, close Jack connection, close

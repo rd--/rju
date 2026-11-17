@@ -9,7 +9,7 @@ CXX = g++ # g++ clang++
 AR = ar # ar llvm-ar
 
 CPPFLAGS += -Wall -pedantic -O3 -g -ffast-math
-CFLAGS += -D_POSIX_C_SOURCE=200809 -std=c99
+CFLAGS += -D_POSIX_C_SOURCE=200809 -std=c11
 CXXFLAGS +=
 LDLIBS = r-common/c/lib-r-common.a -ljack -lpthread -lm
 
