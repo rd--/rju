@@ -1,0 +1,105 @@
+From 297bc4b8cc02b55d655d2be12d393ef133ee7e35 Mon Sep 17 00:00:00 2001
+From: Eric Bavu <eric.bavu@lecnam.net>
+Date: Wed, 18 Nov 2026 16:19:04 +0100
+Subject: [PATCH] rju-play: copy the frames when the file and the server have
+ the same rate
+
+signal_proc() always passes the audio through libsamplerate, also when the
+ratio is 1.0. The converter then filters the signal, so the output is not the
+file: with a 48 kHz file on a 48 kHz server and the default converter, the
+largest difference from the file is 0.0375 (about -28 dBFS) on a test signal
+with high frequency content, and 0.0134 with the best converter. After a seek
+with -t, the filter also rings for about ten frames before the signal is the
+file.
+
+When src_ratio is exactly 1.0 (equal rates and no -r), the frames now go from
+the ring buffer to the output as they are. The end of the file is when the
+disk thread has finished and the ring buffer is empty. The warning about a
+late disk thread is not printed at the end of the file. Nothing changes when
+the rates differ or with -r.
+
+A 1 s file at 48 kHz is now played sample for sample (0 differences of 48000,
+before 48000 of 48000), a 300 frame file and a 4 s file with -b 65536 are
+played in full, and with -t a locate to 96000 starts at 2.000 s with no ringing
+(the first block was heard at 1.831 s before).
+---
+ cmd/rju-play.c | 56 +++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 39 insertions(+), 17 deletions(-)
+
+diff --git a/cmd/rju-play.c b/cmd/rju-play.c
+index ac7c6f1..5701cb6 100644
+--- a/cmd/rju-play.c
++++ b/cmd/rju-play.c
+@@ -240,22 +240,42 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
+ 		}
+ 	}
+ 
+-	/* Get data from sample rate converter, this returns the number of
+-	   frames acquired. */
+-	long err = src_callback_read(d->src,
+-		d->o.src_ratio,
+-		(long)nframes,
+-		d->j_buffer);
+-	die_when(err == 0,
+-		"rju-play: sample rate converter failed: %s\n",
+-		src_strerror(src_error(d->src)));
+-	d->player_frame_count += err;
+-
+-	/* Everything is played once the converter has produced as many frames
+-	   as the reader read, scaled by the sample rate conversion ratio. */
+-	if (atomic_load_explicit(&d->reader_at_eof, memory_order_acquire)
+-		&& d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
+-		atomic_store_explicit(&d->player_done, true, memory_order_release);
++	/* When the file and the server have the same sample rate, and no
++	   resampling ratio was asked for, the frames go from the ring buffer
++	   to the output as they are: the converter would still filter them,
++	   and the output would not be the file. */
++	bool copy = d->o.src_ratio == 1.0;
++	bool reader_at_eof = atomic_load_explicit(&d->reader_at_eof, memory_order_acquire);
++	long err;
++	if (copy) {
++		err = (long)ringbuffer_read(d->rb, (char *)d->j_buffer, nbytes);
++		err /= d->channels * sizeof(float);
++		d->reader_frame_count += err;
++		d->player_frame_count += err;
++
++		/* Everything is played once the disk thread has finished and
++		   the ring buffer is empty. */
++		if (reader_at_eof && ringbuffer_read_space(d->rb) == 0) {
++			atomic_store_explicit(&d->player_done, true, memory_order_release);
++		}
++	} else {
++		/* Get data from sample rate converter, this returns the number of
++		   frames acquired. */
++		err = src_callback_read(d->src,
++			d->o.src_ratio,
++			(long)nframes,
++			d->j_buffer);
++		die_when(err == 0,
++			"rju-play: sample rate converter failed: %s\n",
++			src_strerror(src_error(d->src)));
++		d->player_frame_count += err;
++
++		/* Everything is played once the converter has produced as many frames
++		   as the reader read, scaled by the sample rate conversion ratio. */
++		if (reader_at_eof
++			&& d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
++			atomic_store_explicit(&d->player_done, true, memory_order_release);
++		}
+ 	}
+ 
+ 	/* Uninterleave available data to the output buffers. */
+@@ -270,7 +290,9 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
+ 	   should set a flag and have another thread take appropriate
+ 	   action. */
+ 	if (err < nframes) {
+-		fprintf(stderr, "rju-play: disk thread late (%ld < %d)\n", err, nframes);
++		if (!(copy && reader_at_eof)) {
++			fprintf(stderr, "rju-play: disk thread late (%ld < %d)\n", err, nframes);
++		}
+ 		for (i = err; i < nframes; i++) {
+ 			for (j = 0; j < d->channels; j++) {
+ 				d->out[j][i] = 0.0;
+-- 
+2.50.1 (Apple Git-155)
+

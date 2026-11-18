@@ -1,0 +1,112 @@
+From 0b419ad90abe33b1a0ef53b9c10f94ad0e49b8fe Mon Sep 17 00:00:00 2001
+From: Eric Bavu <eric.bavu@gmail.com>
+Date: Mon, 16 Nov 2026 13:42:59 +0100
+Subject: [PATCH 1/2] rju-play: play the end of the file before exiting
+
+jackplay() closes the JACK client as soon as the disk thread has read the last
+block of the file, so whatever is still in the ring buffer is never played.
+The end of every file is cut by about the size of the ring buffer: 4096
+samples with the default -b, more with a larger one. A file shorter than the
+ring buffer is not played at all. This does not happen with -t or -l.
+
+The disk thread now sets a flag when it reaches the end of the file. The
+process thread counts the frames given to and produced by the converter and
+says when everything has been played, and jackplay() waits for that before
+closing the client. The warning about an empty ring buffer is not printed at
+the end of the file any more.
+
+A 4 s file is now 4.000 s long on the output for any -b (3.93 s with the
+default, 2.65 s with -b 65536 before), and a 300 frame file is played.
+---
+ cmd/rju-play.c | 32 +++++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/rju-play.c b/cmd/rju-play.c
+index 6325343..2ac3af4 100644
+--- a/cmd/rju-play.c
++++ b/cmd/rju-play.c
+@@ -59,6 +59,10 @@ struct player {
+ 	jack_client_t *client;
+ 	SRC_STATE *src;
+ 	struct player_opt o;
++	int eof; /* set by the disk thread once the whole file is in the ring buffer */
++	int done; /* set by the process thread once everything has been played */
++	i64 in_frames; /* frames given to the converter, silence excluded */
++	i64 out_frames; /* frames produced by the converter */
+ };
+ 
+ /* Read the sound file from disk and write to the ring buffer until
+@@ -102,6 +106,9 @@ void *disk_proc(void *PTR)
+ 			} else if (d->o.loop) {
+ 				sf_seek(d->sound_file, 0, SEEK_SET);
+ 			} else {
++				/* Tell the process thread that no more data will come, so that
++				   it can play what is still buffered before the client is closed. */
++				__atomic_store_n(&d->eof, 1, __ATOMIC_RELEASE);
+ 				return NULL;
+ 			}
+ 		}
+@@ -180,6 +187,12 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
+ 	die_when(err == 0,
+ 		"rju-play: sample rate converter failed: %s\n",
+ 		src_strerror(src_error(d->src)));
++	d->out_frames += err;
++	/* Everything is played once the converter has produced as many frames
++	   as the whole file is worth. */
++	if (__atomic_load_n(&d->eof, __ATOMIC_ACQUIRE) && d->out_frames >= (i64)(d->in_frames * d->o.src_ratio)) {
++		__atomic_store_n(&d->done, 1, __ATOMIC_RELEASE);
++	}
+ 
+ 	/* Uninterleave available data to the output buffers. */
+ 	for (i = 0; i < err; i++) {
+@@ -244,15 +257,22 @@ long read_input_from_rb(void *PTR, float **buf)
+ 	int nsamples = d->channels * d->o.rb_request_frames;
+ 	int nbytes = (size_t)nsamples * sizeof(float);
+ 
++	/* Read the end of file flag before the ring buffer: the disk thread
++	   sets it after its last write, so an empty ring buffer seen after
++	   the flag really means that the file is finished. */
++	int eof = __atomic_load_n(&d->eof, __ATOMIC_ACQUIRE);
+ 	int err = ringbuffer_read(d->rb,
+ 		(char *)d->k_buffer,
+ 		nbytes);
+ 	err /= d->channels * sizeof(float);
+ 	*buf = d->k_buffer;
++	d->in_frames += err;
+ 
+ 	/* SRC locks up if we return zero here, return a silent frame */
+ 	if (err == 0) {
+-		fprintf(stderr, "rju-play: ringbuffer empty... zeroing data\n");
++		if (!eof) {
++			fprintf(stderr, "rju-play: ringbuffer empty... zeroing data\n");
++		}
+ 		memset(d->k_buffer, 0, (size_t)nsamples * sizeof(float));
+ 		err = d->o.rb_request_frames;
+ 	}
+@@ -265,6 +285,10 @@ int jackplay(const char *file_name,
+ {
+ 	struct player d;
+ 	d.o = o;
++	d.eof = 0;
++	d.done = 0;
++	d.in_frames = 0;
++	d.out_frames = 0;
+ 	observe_signals();
+ 
+ 	/* Open sound file. */
+@@ -355,6 +379,12 @@ int jackplay(const char *file_name,
+ 	   end of the file or is interrupted. */
+ 	pthread_join(d.disk_thread, NULL);
+ 
++	/* The disk thread ends when the whole file is in the ring buffer.
++	   Wait until it has been played, or the tail of the file is lost. */
++	while (!__atomic_load_n(&d.done, __ATOMIC_ACQUIRE) && __atomic_load_n(&d.eof, __ATOMIC_ACQUIRE) && !observe_end_of_process()) {
++		usleep(2000);
++	}
++
+ 	/* Close sound file, free ring buffer, close Jack connection, close
+ 	   pipe, free data buffers, indicate success. */
+ 	jack_client_close(d.client);
+-- 
+2.50.1 (Apple Git-155)
+

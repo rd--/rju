@@ -1,0 +1,45 @@
+From 3b02568880b24c85b2c25581eb6faa9f3bfaa3ac Mon Sep 17 00:00:00 2001
+From: Eric Bavu <eric.bavu@gmail.com>
+Date: Tue, 17 Nov 2026 13:13:51 +0100
+Subject: [PATCH] rju-play: declare the flags that atomic_* operates on as
+ _Atomic
+
+seek_request, reader_at_eof and player_done are read and written with the
+atomic_*_explicit functions of stdatomic.h but are plain i64 and bool fields.
+C11 asks for an atomic type there. gcc accepts it, clang does not:
+
+  error: address argument to atomic operation must be a pointer to _Atomic type
+
+so rju-play does not build with clang, on macOS or on Linux. Declaring the
+three fields _Atomic fixes that and changes nothing for gcc.
+---
+ cmd/rju-play.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/cmd/rju-play.c b/cmd/rju-play.c
+index db4b3b2..6c6b581 100644
+--- a/cmd/rju-play.c
++++ b/cmd/rju-play.c
+@@ -32,7 +32,7 @@
+ struct player_opt {
+ 	int buffer_frames;
+ 	int minimal_frames;
+-	i64 seek_request;
++	_Atomic i64 seek_request;
+ 	double seek_request_sec;
+ 	bool transport_aware;
+ 	bool unique_name;
+@@ -61,8 +61,8 @@ struct player {
+ 	jack_client_t *client;
+ 	SRC_STATE *src;
+ 	struct player_opt o;
+-	bool reader_at_eof; /* set by the disk thread when it reaches the end of the file */
+-	bool player_done; /* set by the process thread when the completed queue is empty */
++	_Atomic bool reader_at_eof; /* set by the disk thread when it reaches the end of the file */
++	_Atomic bool player_done; /* set by the process thread when the completed queue is empty */
+ 	i64 reader_frame_count; /* reader frame count sent to the converter, silence excluded */
+ 	i64 player_frame_count; /* player frame count read from the converter */
+ };
+-- 
+2.50.1 (Apple Git-155)
+

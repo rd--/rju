@@ -1,0 +1,47 @@
+From dc230c5a24b5a12d158e63b89230990acb4bc94f Mon Sep 17 00:00:00 2001
+From: Eric Bavu <eric.bavu@gmail.com>
+Date: Tue, 17 Nov 2026 13:13:52 +0100
+Subject: [PATCH] time-pause: use nanosleep, which macOS has
+
+clock_nanosleep is not available on macOS, nor is TIMER_ABSTIME, so
+time-pause.c does not compile there. nanosleep is POSIX and is on every system
+that has clock_nanosleep, so pause_for uses it, with the same retry after a
+signal. pause_until reads the clock and sleeps the time that is left, which
+gives up the absolute deadline of TIMER_ABSTIME (the sleep is then relative,
+so it can drift by the time between the two calls).
+---
+ c/time-pause.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/c/time-pause.c b/c/time-pause.c
+index c65282f..3ef105b 100644
+--- a/c/time-pause.c
++++ b/c/time-pause.c
+@@ -8,17 +8,17 @@ void pause_for(double t)
+ {
+ 	struct timespec req = double_to_timespec(t);
+ 	struct timespec rem;
+-	int err = clock_nanosleep(CLOCK_REALTIME, 0, &req, &rem);
+-	if (err == EINTR) {
+-		clock_nanosleep(CLOCK_REALTIME, 0, &rem, NULL);
++	while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
++		req = rem;
+ 	}
+ }
+ 
+ void pause_until(double t)
+ {
+-	struct timespec req = double_to_timespec(t);
+-	int err = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &req, NULL);
+-	if (err == EINTR) {
+-		pause_until(t);
++	struct timespec now;
++	clock_gettime(CLOCK_REALTIME, &now);
++	double d = t - ((double)now.tv_sec + (double)now.tv_nsec / 1e9);
++	if (d > 0) {
++		pause_for(d);
+ 	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+

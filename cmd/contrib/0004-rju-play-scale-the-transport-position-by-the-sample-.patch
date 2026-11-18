@@ -1,0 +1,36 @@
+From 416a73e95781d7ac7d0b09f6a2a2fcc3530580e8 Mon Sep 17 00:00:00 2001
+From: Eric Bavu <eric.bavu@gmail.com>
+Date: Tue, 17 Nov 2026 13:13:52 +0100
+Subject: [PATCH] rju-play: scale the transport position by the sample rate of
+ the file
+
+With -t the file position was set to the frame of the transport, but the
+transport counts frames of the server and the file frames of its own rate. For a
+file at 44.1 kHz on a server at 48 kHz, a locate to 2.000 s started at 2.177 s of
+the file (96000 / 44100). The position is now divided by the resampling ratio.
+
+Checked with a ramp file at 44.1 kHz and jack_transport: locate 96000 starts at
+2.000 s of the file, it was 2.177 s.
+---
+ cmd/rju-play.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/rju-play.c b/cmd/rju-play.c
+index 6c6b581..0069ca9 100644
+--- a/cmd/rju-play.c
++++ b/cmd/rju-play.c
+@@ -180,7 +180,10 @@ int sync_handler(jack_transport_state_t state,
+ 	   converter can be reset here: it still holds samples from before
+ 	   the seek. */
+ 	src_reset(d->src);
+-	atomic_store_explicit(&d->o.seek_request, (i64)position->frame, memory_order_release);
++	/* The transport counts frames of the server, the file frames of its own
++	   rate: one frame of the server is 1 / src_ratio frames of the file. */
++	i64 frame = (i64)((double)position->frame / d->o.src_ratio);
++	atomic_store_explicit(&d->o.seek_request, frame, memory_order_release);
+ 	return 1;
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

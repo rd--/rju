@@ -1,4 +1,4 @@
-#include <stdatomic.h>
+#include <stdatomic.h> /* C11 */
 #include <stdbool.h> /* C99 */
 #include <stdint.h>
 #include <stdio.h>
@@ -104,8 +104,8 @@ void *disk_proc(void *PTR)
 		   cleared once the ring buffer has been filled again. */
 		i64 req = atomic_load_explicit(&d->o.seek_request, memory_order_acquire);
 		if (req >= 0 && req != handled) {
-			sf_count_t err = sf_seek(d->sound_file, (sf_count_t)req, SEEK_SET);
-			if (err == -1) {
+			sf_count_t sf_err = sf_seek(d->sound_file, (sf_count_t)req, SEEK_SET);
+			if (sf_err == -1) {
 				fprintf(stderr, "rju-play: seek request failed, %ld\n", (long)req);
 			}
 			ringbuffer_read_advance(d->rb, ringbuffer_read_space(d->rb));
@@ -137,13 +137,13 @@ void *disk_proc(void *PTR)
 		/* Read sound file data, which *must* be frame aligned. */
 		int nframes = (nbytes / sizeof(float)) / d->channels;
 		int nsamples = nframes * d->channels;
-		sf_count_t err = xsf_read_float(d->sound_file,
+		sf_count_t read_count = xsf_read_float(d->sound_file,
 			d->d_buffer,
 			(sf_count_t)nsamples);
-		if (err == 0) {
+		if (read_count == 0) {
 			if (d->o.transport_aware) {
 				memset(d->d_buffer, 0, nsamples * sizeof(float));
-				err = nsamples;
+				read_count = nsamples;
 			} else if (d->o.loop) {
 				sf_seek(d->sound_file, 0, SEEK_SET);
 			} else {
@@ -156,14 +156,14 @@ void *disk_proc(void *PTR)
 		}
 
 		/* Apply amplitude gain. */
-		for (sf_count_t i = 0; i < err; i++) {
+		for (sf_count_t i = 0; i < read_count; i++) {
 			d->d_buffer[i] *= d->o.ampl;
 		}
 
 		/* Write data to ring buffer. */
 		ringbuffer_write(d->rb,
 			(char *)d->d_buffer,
-			(size_t)err * sizeof(float));
+			(size_t)read_count * sizeof(float));
 
 		/* The ring buffer is full again, let the process thread play. */
 		seek_clear(d, &handled);
@@ -240,26 +240,46 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 		}
 	}
 
-	/* Get data from sample rate converter, this returns the number of
-	   frames acquired. */
-	long err = src_callback_read(d->src,
-		d->o.src_ratio,
-		(long)nframes,
-		d->j_buffer);
-	die_when(err == 0,
-		"rju-play: sample rate converter failed: %s\n",
-		src_strerror(src_error(d->src)));
-	d->player_frame_count += err;
+	/* When the file and the server have the same sample rate, and no
+	   resampling ratio was asked for, the frames go from the ring buffer
+	   to the output as they are: the converter would still filter them,
+	   and the output would not be the file. */
+	bool copy = d->o.src_ratio == 1.0;
+	bool reader_at_eof = atomic_load_explicit(&d->reader_at_eof, memory_order_acquire);
+	i64 frame_count;
+	if (copy) {
+		size_t byte_count = ringbuffer_read(d->rb, (char *)d->j_buffer, nbytes);
+		frame_count = byte_count / (d->channels * sizeof(float));
+		d->reader_frame_count += frame_count;
+		d->player_frame_count += frame_count;
 
-	/* Everything is played once the converter has produced as many frames
-	   as the reader read, scaled by the sample rate conversion ratio. */
-	if (atomic_load_explicit(&d->reader_at_eof, memory_order_acquire)
-		&& d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
-		atomic_store_explicit(&d->player_done, true, memory_order_release);
+		/* Everything is played once the disk thread has finished and
+		   the ring buffer is empty. */
+		if (reader_at_eof && ringbuffer_read_space(d->rb) == 0) {
+			atomic_store_explicit(&d->player_done, true, memory_order_release);
+		}
+	} else {
+		/* Get data from sample rate converter, this returns the number of
+		   frames acquired. */
+		frame_count = src_callback_read(d->src,
+			d->o.src_ratio,
+			(long)nframes,
+			d->j_buffer);
+		die_when(frame_count == 0,
+			"rju-play: sample rate converter failed: %s\n",
+			src_strerror(src_error(d->src)));
+		d->player_frame_count += frame_count;
+
+		/* Everything is played once the converter has produced as many frames
+		   as the reader read, scaled by the sample rate conversion ratio. */
+		if (reader_at_eof
+			&& d->player_frame_count >= (i64)(d->reader_frame_count * d->o.src_ratio)) {
+			atomic_store_explicit(&d->player_done, true, memory_order_release);
+		}
 	}
 
 	/* Uninterleave available data to the output buffers. */
-	for (i = 0; i < err; i++) {
+	for (i = 0; i < frame_count; i++) {
 		for (j = 0; j < d->channels; j++) {
 			d->out[j][i] = d->j_buffer[(i * d->channels) + j];
 		}
@@ -269,9 +289,11 @@ int signal_proc(jack_nframes_t nframes, void *PTR)
 	   output buffers.  The print statement is not correct, a this
 	   should set a flag and have another thread take appropriate
 	   action. */
-	if (err < nframes) {
-		fprintf(stderr, "rju-play: disk thread late (%ld < %d)\n", err, nframes);
-		for (i = err; i < nframes; i++) {
+	if (frame_count < nframes) {
+		if (!(copy && reader_at_eof)) {
+			fprintf(stderr, "rju-play: disk thread late (%ld < %d)\n", frame_count, nframes);
+		}
+		for (i = frame_count; i < nframes; i++) {
 			for (j = 0; j < d->channels; j++) {
 				d->out[j][i] = 0.0;
 			}
@@ -325,23 +347,23 @@ long read_input_from_rb(void *PTR, float **buf)
 	   sets it after the last write, an empty ring buffer seen after
 	   the flag means that the file is finished. */
 	bool reader_at_eof_before_read = atomic_load_explicit(&d->reader_at_eof, memory_order_acquire);
-	int err = ringbuffer_read(d->rb,
+	int byte_count = ringbuffer_read(d->rb,
 		(char *)d->k_buffer,
 		nbytes);
-	err /= d->channels * sizeof(float);
+	int frame_count = byte_count / (d->channels * sizeof(float));
 	*buf = d->k_buffer;
-	d->reader_frame_count += err;
+	d->reader_frame_count += frame_count;
 
 	/* SRC locks up if we return zero here, return a silent frame */
-	if (err == 0) {
+	if (frame_count == 0) {
 		if (!reader_at_eof_before_read) {
 			fprintf(stderr, "rju-play: ringbuffer empty... zeroing data\n");
 		}
 		memset(d->k_buffer, 0, (size_t)nsamples * sizeof(float));
-		err = d->o.rb_request_frames;
+		frame_count = d->o.rb_request_frames;
 	}
 
-	return (long)err;
+	return (long)frame_count;
 }
 
 int jackplay(const char *file_name,
@@ -374,13 +396,13 @@ int jackplay(const char *file_name,
 	d.rb = ringbuffer_create(d.buffer_bytes);
 
 	/* Setup sample rate conversion. */
-	int err;
+	int src_err;
 	d.src = src_callback_new(read_input_from_rb,
 		d.o.converter,
 		d.channels,
-		&err,
+		&src_err,
 		&d);
-	die_when(!d.src, "rju-play: SRC setup failed: %s\n", src_strerror(err));
+	die_when(!d.src, "rju-play: SRC setup failed: %s\n", src_strerror(src_err));
 
 	/* Create communication pipe. */
 	xpipe(d.pipe);
