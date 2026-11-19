@@ -1,5 +1,5 @@
 From 3b02568880b24c85b2c25581eb6faa9f3bfaa3ac Mon Sep 17 00:00:00 2001
-From: Eric Bavu <eric.bavu@gmail.com>
+From: Eric Bavu
 Date: Tue, 17 Nov 2026 13:13:51 +0100
 Subject: [PATCH] rju-play: declare the flags that atomic_* operates on as
  _Atomic

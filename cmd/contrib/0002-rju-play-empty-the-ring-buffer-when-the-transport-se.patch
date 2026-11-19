@@ -1,5 +1,5 @@
 From f073b1dc5d5e116fe3b1bada1313b7939e0dea5b Mon Sep 17 00:00:00 2001
-From: Eric Bavu <eric.bavu@gmail.com>
+From: Eric Bavu
 Date: Mon, 16 Nov 2026 13:42:59 +0100
 Subject: [PATCH 2/2] rju-play: empty the ring buffer when the transport seeks
 
